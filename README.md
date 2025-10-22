@@ -4,7 +4,67 @@
 
 ## 📋 Purpose
 
-The Relayer Service is a security-focused microservice that holds the `ADMIN_PRIVATE_KEY` and executes blockchain transactions on behalf of the main backend. This architectural separation ensures that even if the main backend is compromised, the private key remains secure.
+The Relayer Service is a security-focused microservice that holds the `ADMIN_PRIVATE_KEY` and execute### POST /force-execute
+
+Force execute a raffle (admin override for stuck raffles).
+
+**Request:**
+```json
+{
+  "raffleId": 123
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "txHash": "0x...",
+  "raffleId": "123",
+  "receipt": {
+    "blockNumber": 12345,
+    "gasUsed": "500000"
+  }
+}
+```
+
+---
+
+## 🤖 Automatic Raffle Executor
+
+The relayer includes an **automatic executor** that runs every **5 minutes** to detect and execute expired raffles.
+
+### How It Works
+
+1. **Detection**: Scans all active raffles
+2. **Criteria**: Finds raffles where:
+   - Status = FILLING
+   - Current time > expiresAt
+   - currentTickets >= minTickets (meets requirement)
+   - currentTickets < maxTickets (not full)
+3. **Execution**: Calls `executeRaffle()` to trigger winner selection
+4. **Logging**: Detailed logs of all actions
+
+### Why 5 Minutes?
+
+- ⚡ Fast enough for good UX
+- 🔋 Light on RPC calls (not every second)
+- 💰 Minimal gas costs
+- 📊 Easy to communicate to users
+
+**User-facing message:**
+> "Raffles that expire without filling completely are automatically executed within 5 minutes after the deadline."
+
+---
+
+## 🔒 Security Featurestions on behalf of the main backend. This architectural separation ensures that even if the main backend is compromised, the private key remains secure.
+
+### Key Features
+- ✅ **Automatic Raffle Execution**: Detects and executes expired raffles every 5 minutes
+- ✅ **Emergency Controls**: Pause/unpause system during incidents
+- ✅ **Fee Management**: Withdraw accumulated platform fees
+- ✅ **Security Hardened**: API key auth, rate limiting, IP whitelist
+- ✅ **Transaction Signing**: Isolated private key management
 
 ## 🏗️ Architecture
 
@@ -68,7 +128,23 @@ pnpm start
 
 ## 📡 API Endpoints
 
-All endpoints require `X-API-Key` header with the `RELAYER_API_KEY`.
+All endpoints (except `/health`) require `X-API-Key` header with the `RELAYER_API_KEY`.
+
+### GET /health
+
+Health check endpoint (no authentication required).
+
+**Response:**
+```json
+{
+  "success": true,
+  "status": "healthy",
+  "timestamp": "2025-10-06T12:00:00.000Z",
+  "signer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+}
+```
+
+---
 
 ### POST /create-raffle
 
@@ -94,9 +170,100 @@ Create a new raffle on-chain.
 }
 ```
 
+---
+
 ### POST /execute-refund
 
-Execute refund batch for an expired raffle.
+Execute refund batch for an expired raffle that didn't meet minimum tickets.
+
+**Request:**
+```json
+{
+  "raffleId": 123
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "txHash": "0x...",
+  "receipt": {
+    "blockNumber": 12345,
+    "gasUsed": "450000"
+  }
+}
+```
+
+---
+
+### POST /pause-system
+
+**🚨 EMERGENCY ONLY** - Pause all raffle operations.
+
+**Request:**
+```json
+{}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "txHash": "0x...",
+  "message": "System paused successfully"
+}
+```
+
+---
+
+### POST /unpause-system
+
+Resume normal operations after pause.
+
+**Request:**
+```json
+{}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "txHash": "0x...",
+  "message": "System unpaused successfully"
+}
+```
+
+---
+
+### POST /withdraw-fees
+
+Withdraw accumulated platform fees to owner address.
+
+**Request:**
+```json
+{}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "txHash": "0x...",
+  "message": "Platform fees withdrawn to owner",
+  "receipt": {
+    "blockNumber": 12345,
+    "gasUsed": "150000"
+  }
+}
+```
+
+---
+
+### POST /force-execute
+
+Force execute a raffle (admin override for stuck raffles).
 
 **Request:**
 ```json
@@ -159,7 +326,7 @@ cd relayer
 pnpm run dev
 
 # Terminal 2: Test with curl
-curl -X POST http://localhost:3001/create-raffle \
+curl -X POST http://localhost:3002/create-raffle \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-api-key-here" \
   -d '{
@@ -233,7 +400,7 @@ Either add your IP to `ALLOWED_IPS` or remove the whitelist for development.
 | `RPC_URL` | ✅ | Blockchain RPC endpoint | `https://bsc-testnet...` |
 | `CONTRACT_ADDRESS` | ✅ | RifasPlatform address | `0x9fe...` |
 | `NODE_ENV` | ❌ | Environment | `development` |
-| `PORT` | ❌ | Server port | `3001` |
+| `PORT` | ❌ | Server port | `3002` |
 | `HOST` | ❌ | Server host | `0.0.0.0` |
 | `ALLOWED_IPS` | ❌ | IP whitelist (comma-separated) | `127.0.0.1` |
 | `RATE_LIMIT_PER_MINUTE` | ❌ | Rate limit | `10` |

@@ -2,41 +2,25 @@ import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
-import dotenv from 'dotenv';
 import { ethers } from 'ethers';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
+// Note: .env is loaded by loader.ts before this file imports
+import logger from './utils/logger.js';
+import {
+  SERVER_CONFIG,
+  RELAYER_API_KEY,
+  ALLOWED_IPS,
+  RATE_LIMIT_CONFIG,
+  NETWORK_CONFIG,
+  CONTRACT_ADDRESS,
+  PRIVATE_KEY
+} from './config/app.config.js';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-// Load environment variables
-dotenv.config();
-
-// ============================================
-// CONFIGURATION VALIDATION
-// ============================================
-
-const requiredEnvVars = [
-  'ADMIN_PRIVATE_KEY',
-  'RELAYER_API_KEY',
-  'RPC_URL',
-  'CONTRACT_ADDRESS'
-];
-
-for (const envVar of requiredEnvVars) {
-  if (!process.env[envVar] || process.env[envVar] === '0x...' || process.env[envVar]!.length < 10) {
-    console.error(`❌ Missing or invalid required environment variable: ${envVar}`);
-    process.exit(1);
-  }
-}
-
-const PORT = parseInt(process.env.PORT || '3001');
-const HOST = process.env.HOST || '0.0.0.0';
-const RELAYER_API_KEY = process.env.RELAYER_API_KEY!;
-const ALLOWED_IPS = process.env.ALLOWED_IPS?.split(',').map(ip => ip.trim()).filter(Boolean) || [];
-const RATE_LIMIT_PER_MINUTE = parseInt(process.env.RATE_LIMIT_PER_MINUTE || '10');
 
 // ============================================
 // BLOCKCHAIN SETUP
@@ -44,11 +28,11 @@ const RATE_LIMIT_PER_MINUTE = parseInt(process.env.RATE_LIMIT_PER_MINUTE || '10'
 
 let provider: ethers.JsonRpcProvider;
 let signer: ethers.Wallet;
-let contract: ethers.Contract;
+export let contract: ethers.Contract; // Export for executor
 
 try {
-  provider = new ethers.JsonRpcProvider(process.env.RPC_URL);
-  signer = new ethers.Wallet(process.env.ADMIN_PRIVATE_KEY!, provider);
+  provider = new ethers.JsonRpcProvider(NETWORK_CONFIG.rpcUrl);
+  signer = new ethers.Wallet(PRIVATE_KEY, provider);
   
   // Load contract ABI
   const abiPath = path.join(__dirname, '../abi/RifasPlatform.json');
@@ -60,14 +44,15 @@ try {
   
   const contractArtifact = JSON.parse(fs.readFileSync(abiPath, 'utf-8'));
   const contractABI = contractArtifact.abi || contractArtifact; // Handle both artifact and raw ABI formats
-  contract = new ethers.Contract(process.env.CONTRACT_ADDRESS!, contractABI, signer);
+  contract = new ethers.Contract(CONTRACT_ADDRESS, contractABI, signer);
   
-  console.log('✅ Blockchain connection initialized');
-  console.log(`   RPC: ${process.env.RPC_URL}`);
-  console.log(`   Contract: ${process.env.CONTRACT_ADDRESS}`);
-  console.log(`   Signer: ${signer.address}`);
+  logger.info('✅ Blockchain connection initialized');
+  logger.info(`   Network: ${NETWORK_CONFIG.name} (Chain ID: ${NETWORK_CONFIG.chainId})`);
+  logger.info(`   RPC: ${NETWORK_CONFIG.rpcUrl}`);
+  logger.info(`   Contract: ${CONTRACT_ADDRESS}`);
+  logger.info(`   Signer: ${signer.address}`);
 } catch (error: any) {
-  console.error('❌ Failed to initialize blockchain connection:', error.message);
+  logger.error('❌ Failed to initialize blockchain connection:', { error: error.message });
   process.exit(1);
 }
 
@@ -107,7 +92,7 @@ function checkRateLimit(ip: string): boolean {
     return true;
   }
   
-  if (entry.count >= RATE_LIMIT_PER_MINUTE) {
+  if (entry.count >= RATE_LIMIT_CONFIG.requestsPerMinute) {
     return false; // Rate limit exceeded
   }
   
@@ -182,7 +167,7 @@ function rateLimitMiddleware(req: Request, res: Response, next: NextFunction): v
     res.status(429).json({
       success: false,
       error: 'Too Many Requests',
-      message: `Rate limit exceeded. Max ${RATE_LIMIT_PER_MINUTE} requests per minute.`
+      message: `Rate limit exceeded. Max ${RATE_LIMIT_CONFIG.requestsPerMinute} requests per minute.`
     });
     return;
   }
@@ -215,6 +200,7 @@ app.get('/health', (_req, res) => {
 // ============================================
 
 interface CreateRaffleRequest {
+  referenceId: string | number | bigint;
   templateId: string | number | bigint;
   ticketPrice: string;
   maxTickets: number;
@@ -224,19 +210,20 @@ interface CreateRaffleRequest {
 
 app.post('/create-raffle', async (req: Request, res: Response) => {
   try {
-    const { templateId, ticketPrice, maxTickets, minTickets, durationSeconds } = req.body as CreateRaffleRequest;
+    const { referenceId, templateId, ticketPrice, maxTickets, minTickets, durationSeconds } = req.body as CreateRaffleRequest;
     
     // Validation
-    if (!templateId || !ticketPrice || !maxTickets || !minTickets || !durationSeconds) {
+    if (!referenceId || !templateId || !ticketPrice || !maxTickets || !minTickets || !durationSeconds) {
       res.status(400).json({
         success: false,
         error: 'Missing required fields',
-        required: ['templateId', 'ticketPrice', 'maxTickets', 'minTickets', 'durationSeconds']
+        required: ['referenceId', 'templateId', 'ticketPrice', 'maxTickets', 'minTickets', 'durationSeconds']
       });
       return;
     }
     
-    console.log('📝 Creating raffle on-chain...', {
+    logger.info('📝 Creating raffle on-chain...', {
+      referenceId: referenceId.toString(),
       templateId: templateId.toString(),
       ticketPrice,
       maxTickets,
@@ -247,9 +234,10 @@ app.post('/create-raffle', async (req: Request, res: Response) => {
     // Get fresh nonce from pending pool
     const nonce = await signer.getNonce('pending');
     
-    // Send transaction
+    // Send transaction (fire and forget - blockchain events will update DB)
     const tx = await contract.createRaffle(
       BigInt(templateId),
+      BigInt(referenceId),
       ethers.parseUnits(ticketPrice, 18),
       BigInt(maxTickets),
       BigInt(minTickets),
@@ -257,19 +245,25 @@ app.post('/create-raffle', async (req: Request, res: Response) => {
       { nonce }
     );
     
-    console.log('✅ Raffle creation tx sent:', {
+    logger.info('✅ Raffle creation tx sent (not waiting for confirmation):', {
       txHash: tx.hash,
-      nonce
+      nonce,
+      referenceId: referenceId.toString()
     });
     
     res.json({
       success: true,
       txHash: tx.hash,
-      nonce
+      nonce,
+      referenceId: referenceId.toString(),
+      message: 'Transaction sent - blockchain events will update database'
     });
     
   } catch (error: any) {
-    console.error('❌ Failed to create raffle:', error);
+    logger.error('❌ Failed to create raffle:', {
+      error: error.message,
+      code: error.code
+    });
     res.status(500).json({
       success: false,
       error: 'Transaction failed',
@@ -301,7 +295,7 @@ app.post('/execute-refund', async (req: Request, res: Response) => {
       return;
     }
     
-    console.log('💸 Executing refund batch...', {
+    logger.info('💸 Executing refund batch...', {
       raffleId: raffleId.toString()
     });
     
@@ -309,41 +303,34 @@ app.post('/execute-refund', async (req: Request, res: Response) => {
     const gasEstimate = await contract.executeRefundBatch.estimateGas(BigInt(raffleId));
     const gasLimit = gasEstimate * 120n / 100n; // +20% buffer
     
-    console.log('⛽ Gas estimate:', {
+    logger.debug('⛽ Gas estimate:', {
       estimate: gasEstimate.toString(),
       limit: gasLimit.toString()
     });
     
-    // Send transaction
+    // Send transaction (fire and forget)
     const tx = await contract.executeRefundBatch(BigInt(raffleId), {
       gasLimit
     });
     
-    console.log('✅ Refund batch tx sent:', {
+    logger.info('✅ Refund batch tx sent (not waiting for confirmation):', {
       txHash: tx.hash,
       raffleId: raffleId.toString()
-    });
-    
-    // Wait for confirmation
-    const receipt = await tx.wait();
-    
-    console.log('✅ Refund batch confirmed:', {
-      txHash: receipt?.hash,
-      blockNumber: receipt?.blockNumber,
-      gasUsed: receipt?.gasUsed.toString()
     });
     
     res.json({
       success: true,
       txHash: tx.hash,
-      receipt: {
-        blockNumber: receipt?.blockNumber,
-        gasUsed: receipt?.gasUsed.toString()
-      }
+      raffleId: raffleId.toString(),
+      message: 'Transaction sent - blockchain events will update database'
     });
     
   } catch (error: any) {
-    console.error('❌ Failed to execute refund:', error);
+    logger.error('❌ Failed to execute refund:', {
+      error: error.message,
+      code: error.code,
+      reason: error.reason
+    });
     res.status(500).json({
       success: false,
       error: 'Transaction failed',
@@ -355,11 +342,360 @@ app.post('/execute-refund', async (req: Request, res: Response) => {
 });
 
 // ============================================
+// POST /pause-system
+// Emergency pause - stops all raffle operations
+// ============================================
+
+app.post('/pause-system', async (_req: Request, res: Response) => {
+  try {
+    logger.warn('🚨 EMERGENCY PAUSE requested');
+    
+    // Get fresh nonce from pending pool
+    const nonce = await signer.getNonce('pending');
+    
+    const tx = await contract.emergencyPause({ nonce });
+    
+    logger.warn('⏸️  Pause transaction sent:', {
+      txHash: tx.hash,
+      nonce
+    });
+    
+    const receipt = await tx.wait();
+    
+    logger.warn('🛑 SYSTEM PAUSED', {
+      txHash: receipt?.hash,
+      blockNumber: receipt?.blockNumber
+    });
+    
+    res.json({
+      success: true,
+      txHash: tx.hash,
+      message: 'System paused successfully'
+    });
+    
+  } catch (error: any) {
+    logger.error('❌ Failed to pause system:', {
+      error: error.message,
+      code: error.code
+    });
+    res.status(500).json({
+      success: false,
+      error: 'Pause failed',
+      message: error.message
+    });
+  }
+});
+
+// ============================================
+// POST /unpause-system
+// Resume normal operations after pause
+// ============================================
+
+app.post('/unpause-system', async (_req: Request, res: Response) => {
+  try {
+    logger.info('▶️  UNPAUSE requested');
+    
+    // Get fresh nonce from pending pool
+    const nonce = await signer.getNonce('pending');
+    
+    const tx = await contract.emergencyUnpause({ nonce });
+    
+    logger.info('▶️  Unpause transaction sent:', {
+      txHash: tx.hash,
+      nonce
+    });
+    
+    const receipt = await tx.wait();
+    
+    logger.info('✅ SYSTEM RESUMED', {
+      txHash: receipt?.hash,
+      blockNumber: receipt?.blockNumber
+    });
+    
+    res.json({
+      success: true,
+      txHash: tx.hash,
+      message: 'System unpaused successfully'
+    });
+    
+  } catch (error: any) {
+    logger.error('❌ Failed to unpause system:', {
+      error: error.message,
+      code: error.code
+    });
+    res.status(500).json({
+      success: false,
+      error: 'Unpause failed',
+      message: error.message
+    });
+  }
+});
+
+// ============================================
+// POST /withdraw-fees
+// Withdraw accumulated platform fees
+// ============================================
+
+app.post('/withdraw-fees', async (_req: Request, res: Response) => {
+  try {
+    logger.info('💰 Platform fee withdrawal requested');
+    
+    // Get fresh nonce from pending pool
+    const nonce = await signer.getNonce('pending');
+    
+    // withdrawPlatformFees() doesn't take parameters - sends all to owner
+    const tx = await contract.withdrawPlatformFees({ nonce });
+    
+    logger.info('💸 Withdrawal transaction sent:', {
+      txHash: tx.hash,
+      nonce
+    });
+    
+    const receipt = await tx.wait();
+    
+    logger.info('✅ Fees withdrawn successfully', {
+      txHash: receipt?.hash,
+      blockNumber: receipt?.blockNumber,
+      gasUsed: receipt?.gasUsed.toString()
+    });
+    
+    res.json({
+      success: true,
+      txHash: tx.hash,
+      message: 'Platform fees withdrawn to owner',
+      receipt: {
+        blockNumber: receipt?.blockNumber,
+        gasUsed: receipt?.gasUsed.toString()
+      }
+    });
+    
+  } catch (error: any) {
+    logger.error('❌ Failed to withdraw fees:', {
+      error: error.message,
+      code: error.code
+    });
+    res.status(500).json({
+      success: false,
+      error: 'Withdrawal failed',
+      message: error.message
+    });
+  }
+});
+
+// ============================================
+// POST /force-execute
+// Force execute a raffle (admin override)
+// ============================================
+
+// ============================================
+// RAFFLE EXECUTION ENDPOINTS
+// ============================================
+
+/**
+ * POST /execute-raffle
+ * Execute an expired raffle that meets minimum tickets
+ */
+interface ExecuteRaffleRequest {
+  raffleId: number | string;
+}
+
+app.post('/execute-raffle', async (req: Request, res: Response) => {
+  try {
+    const { raffleId } = req.body as ExecuteRaffleRequest;
+    
+    if (!raffleId) {
+      res.status(400).json({
+        success: false,
+        error: 'Missing required field: raffleId'
+      });
+      return;
+    }
+    
+    logger.info('🎲 Execute raffle requested', {
+      raffleId: raffleId.toString()
+    });
+    
+    // Get fresh nonce from pending pool
+    const nonce = await signer.getNonce('pending');
+    
+    // Estimate gas
+    const gasEstimate = await contract.executeRaffle.estimateGas(BigInt(raffleId));
+    const gasLimit = gasEstimate * 120n / 100n;
+    
+    // Send transaction (fire and forget - blockchain events will update DB)
+    const tx = await contract.executeRaffle(BigInt(raffleId), {
+      gasLimit,
+      nonce
+    });
+    
+    logger.info('✅ Execute raffle tx sent (not waiting for confirmation):', {
+      raffleId: raffleId.toString(),
+      txHash: tx.hash,
+      nonce
+    });
+    
+    res.json({
+      success: true,
+      txHash: tx.hash,
+      raffleId: raffleId.toString(),
+      message: 'Transaction sent - blockchain events will update database'
+    });
+    
+  } catch (error: any) {
+    logger.error('❌ Failed to execute raffle:', {
+      error: error.message,
+      code: error.code
+    });
+    res.status(500).json({
+      success: false,
+      error: 'Execute raffle failed',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * POST /cancel-raffle
+ * Cancel an empty raffle (0 tickets)
+ */
+interface CancelRaffleRequest {
+  raffleId: number | string;
+}
+
+app.post('/cancel-raffle', async (req: Request, res: Response) => {
+  try {
+    const { raffleId } = req.body as CancelRaffleRequest;
+    
+    if (!raffleId) {
+      res.status(400).json({
+        success: false,
+        error: 'Missing required field: raffleId'
+      });
+      return;
+    }
+    
+    logger.info('🚫 Cancel raffle requested', {
+      raffleId: raffleId.toString()
+    });
+    
+    // Get fresh nonce from pending pool
+    const nonce = await signer.getNonce('pending');
+    
+    // Estimate gas
+    const gasEstimate = await contract.cancelRaffle.estimateGas(BigInt(raffleId));
+    const gasLimit = gasEstimate * 120n / 100n;
+    
+    // Send transaction (fire and forget - blockchain events will update DB)
+    const tx = await contract.cancelRaffle(BigInt(raffleId), {
+      gasLimit,
+      nonce
+    });
+    
+    logger.info('✅ Cancel raffle tx sent (not waiting for confirmation):', {
+      raffleId: raffleId.toString(),
+      txHash: tx.hash,
+      nonce
+    });
+    
+    res.json({
+      success: true,
+      txHash: tx.hash,
+      raffleId: raffleId.toString(),
+      message: 'Transaction sent - blockchain events will update database'
+    });
+    
+  } catch (error: any) {
+    logger.error('❌ Failed to cancel raffle:', {
+      error: error.message,
+      code: error.code
+    });
+    res.status(500).json({
+      success: false,
+      error: 'Cancel raffle failed',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * POST /force-execute
+ * Force execute a raffle (admin only)
+ */
+interface ForceExecuteRequest {
+  raffleId: number | string;
+}
+
+app.post('/force-execute', async (req: Request, res: Response) => {
+  try {
+    const { raffleId } = req.body as ForceExecuteRequest;
+    
+    if (!raffleId) {
+      res.status(400).json({
+        success: false,
+        error: 'Missing required field: raffleId'
+      });
+      return;
+    }
+    
+    logger.warn('⚠️  FORCE EXECUTE requested', {
+      raffleId: raffleId.toString()
+    });
+    
+    // Get fresh nonce from pending pool
+    const nonce = await signer.getNonce('pending');
+    
+    // Estimate gas
+    const gasEstimate = await contract.executeRaffle.estimateGas(BigInt(raffleId));
+    const gasLimit = gasEstimate * 120n / 100n;
+    
+    const tx = await contract.executeRaffle(BigInt(raffleId), {
+      gasLimit,
+      nonce
+    });
+    
+    logger.info('🎲 Force execute tx sent:', {
+      raffleId: raffleId.toString(),
+      txHash: tx.hash,
+      nonce
+    });
+    
+    const receipt = await tx.wait();
+    
+    logger.info('✅ Raffle force executed', {
+      raffleId: raffleId.toString(),
+      txHash: receipt?.hash,
+      blockNumber: receipt?.blockNumber
+    });
+    
+    res.json({
+      success: true,
+      txHash: tx.hash,
+      raffleId: raffleId.toString(),
+      receipt: {
+        blockNumber: receipt?.blockNumber,
+        gasUsed: receipt?.gasUsed.toString()
+      }
+    });
+    
+  } catch (error: any) {
+    logger.error('❌ Failed to force execute raffle:', {
+      error: error.message,
+      code: error.code
+    });
+    res.status(500).json({
+      success: false,
+      error: 'Force execute failed',
+      message: error.message
+    });
+  }
+});
+
+// ============================================
 // ERROR HANDLER
 // ============================================
 
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
-  console.error('💥 Unhandled error:', err);
+  logger.error('💥 Unhandled error:', { error: err.message, stack: err.stack });
   res.status(500).json({
     success: false,
     error: 'Internal server error',
@@ -368,31 +704,36 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 });
 
 // ============================================
-// START SERVER
+// START SERVER & EXECUTOR
 // ============================================
 
-app.listen(PORT, HOST, () => {
-  console.log('');
-  console.log('🚀 RIFAST Relayer Service Started');
-  console.log('==================================');
-  console.log(`📍 Listening on: http://${HOST}:${PORT}`);
-  console.log(`🔐 API Key: ${RELAYER_API_KEY.substring(0, 10)}...`);
-  console.log(`🛡️  IP Whitelist: ${ALLOWED_IPS.length > 0 ? ALLOWED_IPS.join(', ') : 'Disabled (allow all)'}`);
-  console.log(`⚡ Rate Limit: ${RATE_LIMIT_PER_MINUTE} req/min`);
-  console.log(`🌐 RPC: ${process.env.RPC_URL}`);
-  console.log(`📜 Contract: ${process.env.CONTRACT_ADDRESS}`);
-  console.log(`👤 Signer: ${signer.address}`);
-  console.log('==================================');
-  console.log('');
+const server = app.listen(SERVER_CONFIG.port, SERVER_CONFIG.host, () => {
+  logger.info('🚀 RIFAST Relayer Service Started');
+  logger.info('==================================');
+  logger.info(`📍 Listening on: http://${SERVER_CONFIG.host}:${SERVER_CONFIG.port}`);
+  logger.info(`🛡️  IP Whitelist: ${ALLOWED_IPS.length > 0 ? ALLOWED_IPS.join(', ') : 'Disabled (allow all)'}`);
+  logger.info(`⚡ Rate Limit: ${RATE_LIMIT_CONFIG.requestsPerMinute} req/min`);
+  logger.info(`🌐 Network: ${NETWORK_CONFIG.name} (Chain ID: ${NETWORK_CONFIG.chainId})`);
+  logger.info(`📜 Contract: ${CONTRACT_ADDRESS}`);
+  logger.info(`👤 Signer: ${signer.address}`);
+  logger.info('==================================');
 });
 
 // Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('⚠️  SIGTERM received, shutting down gracefully...');
-  process.exit(0);
+process.on('SIGTERM', async () => {
+  logger.warn('⚠️  SIGTERM received, shutting down gracefully...');
+  
+  server.close(() => {
+    logger.info('Server closed');
+    process.exit(0);
+  });
 });
 
-process.on('SIGINT', () => {
-  console.log('⚠️  SIGINT received, shutting down gracefully...');
-  process.exit(0);
+process.on('SIGINT', async () => {
+  logger.warn('⚠️  SIGINT received, shutting down gracefully...');
+  
+  server.close(() => {
+    logger.info('Server closed');
+    process.exit(0);
+  });
 });
