@@ -17,8 +17,7 @@ export function authenticateRequest(req: Request, res: Response, next: NextFunct
     
     res.status(401).json({ 
       success: false, 
-      error: 'Unauthorized',
-      message: 'Invalid or missing API key'
+      error: 'Unauthorized'
     });
     return;
   }

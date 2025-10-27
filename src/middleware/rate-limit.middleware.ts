@@ -70,8 +70,7 @@ export function rateLimitMiddleware(req: Request, res: Response, next: NextFunct
     
     res.status(429).json({
       success: false,
-      error: 'Too Many Requests',
-      message: `Rate limit exceeded. Max ${RATE_LIMIT_CONFIG.requestsPerMinute} requests per minute.`
+      error: 'Too Many Requests'
     });
     return;
   }

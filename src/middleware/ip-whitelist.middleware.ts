@@ -24,8 +24,7 @@ export function checkIPWhitelist(req: Request, res: Response, next: NextFunction
     
     res.status(403).json({ 
       success: false, 
-      error: 'Forbidden',
-      message: 'IP not whitelisted'
+      error: 'Forbidden'
     });
     return;
   }
