@@ -10,13 +10,17 @@ import { fileURLToPath } from 'url';
 // Note: .env is loaded by loader.ts before this file imports
 import logger from './utils/logger.js';
 import {
+  authenticateRequest,
+  checkIPWhitelist,
+  rateLimitMiddleware
+} from './middleware/index.js';
+import {
   SERVER_CONFIG,
-  RELAYER_API_KEY,
-  ALLOWED_IPS,
-  RATE_LIMIT_CONFIG,
   NETWORK_CONFIG,
   CONTRACT_ADDRESS,
-  PRIVATE_KEY
+  PRIVATE_KEY,
+  ALLOWED_IPS,
+  RATE_LIMIT_CONFIG
 } from './config/app.config.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -68,114 +72,7 @@ app.use(cors()); // Enable CORS
 app.use(express.json()); // Parse JSON bodies
 app.use(morgan('combined')); // HTTP request logging
 
-// ============================================
-// RATE LIMITING (Simple in-memory)
-// ============================================
-
-interface RateLimitEntry {
-  count: number;
-  resetAt: number;
-}
-
-const rateLimitStore = new Map<string, RateLimitEntry>();
-
-function checkRateLimit(ip: string): boolean {
-  const now = Date.now();
-  const entry = rateLimitStore.get(ip);
-  
-  if (!entry || entry.resetAt < now) {
-    // Reset or create new entry
-    rateLimitStore.set(ip, {
-      count: 1,
-      resetAt: now + 60_000 // 1 minute
-    });
-    return true;
-  }
-  
-  if (entry.count >= RATE_LIMIT_CONFIG.requestsPerMinute) {
-    return false; // Rate limit exceeded
-  }
-  
-  entry.count++;
-  return true;
-}
-
-// Cleanup old rate limit entries every 5 minutes
-setInterval(() => {
-  const now = Date.now();
-  for (const [ip, entry] of rateLimitStore.entries()) {
-    if (entry.resetAt < now) {
-      rateLimitStore.delete(ip);
-    }
-  }
-}, 5 * 60_000);
-
-// ============================================
-// MIDDLEWARE: AUTHENTICATION
-// ============================================
-
-function authenticateRequest(req: Request, res: Response, next: NextFunction): void {
-  const apiKey = req.headers['x-api-key'] as string;
-  
-  if (!apiKey || apiKey !== RELAYER_API_KEY) {
-    res.status(401).json({ 
-      success: false, 
-      error: 'Unauthorized',
-      message: 'Invalid or missing API key'
-    });
-    return;
-  }
-  
-  next();
-}
-
-// ============================================
-// MIDDLEWARE: IP WHITELIST
-// ============================================
-
-function checkIPWhitelist(req: Request, res: Response, next: NextFunction): void {
-  if (ALLOWED_IPS.length === 0) {
-    // No whitelist configured, allow all
-    next();
-    return;
-  }
-  
-  const clientIP = req.ip || req.socket.remoteAddress || 'unknown';
-  
-  if (!ALLOWED_IPS.includes(clientIP)) {
-    console.warn(`🚫 Rejected request from unauthorized IP: ${clientIP}`);
-    res.status(403).json({ 
-      success: false, 
-      error: 'Forbidden',
-      message: 'IP not whitelisted'
-    });
-    return;
-  }
-  
-  next();
-}
-
-// ============================================
-// MIDDLEWARE: RATE LIMITING
-// ============================================
-
-function rateLimitMiddleware(req: Request, res: Response, next: NextFunction): void {
-  const clientIP = req.ip || req.socket.remoteAddress || 'unknown';
-  
-  if (!checkRateLimit(clientIP)) {
-    console.warn(`⚠️ Rate limit exceeded for IP: ${clientIP}`);
-    res.status(429).json({
-      success: false,
-      error: 'Too Many Requests',
-      message: `Rate limit exceeded. Max ${RATE_LIMIT_CONFIG.requestsPerMinute} requests per minute.`
-    });
-    return;
-  }
-  
-  next();
-}
-
-// Apply middleware to all routes
+// Apply security middleware to all routes
 app.use(authenticateRequest);
 app.use(checkIPWhitelist);
 app.use(rateLimitMiddleware);
@@ -477,6 +374,163 @@ app.post('/withdraw-fees', async (_req: Request, res: Response) => {
     res.status(500).json({
       success: false,
       error: 'Withdrawal failed',
+      message: error.message
+    });
+  }
+});
+
+// ============================================
+// POST /emergency-pause
+// Emergency pause with event logging (security incident)
+// ============================================
+
+app.post('/emergency-pause', async (_req: Request, res: Response) => {
+  try {
+    logger.warn('🚨 EMERGENCY PAUSE requested');
+    
+    const nonce = await signer.getNonce('pending');
+    const tx = await contract.emergencyPause({ nonce });
+    
+    logger.warn('⏸️  Emergency pause transaction sent:', {
+      txHash: tx.hash,
+      nonce
+    });
+    
+    const receipt = await tx.wait();
+    
+    logger.warn('🚨 SYSTEM EMERGENCY PAUSED', {
+      txHash: receipt?.hash,
+      blockNumber: receipt?.blockNumber
+    });
+    
+    res.json({
+      success: true,
+      txHash: tx.hash,
+      message: 'System emergency paused - all user operations halted',
+      receipt: {
+        blockNumber: receipt?.blockNumber,
+        gasUsed: receipt?.gasUsed.toString()
+      }
+    });
+    
+  } catch (error: any) {
+    logger.error('❌ Failed to emergency pause:', {
+      error: error.message,
+      code: error.code
+    });
+    res.status(500).json({
+      success: false,
+      error: 'Emergency pause failed',
+      message: error.message
+    });
+  }
+});
+
+// ============================================
+// POST /emergency-unpause
+// Emergency unpause after incident resolved
+// ============================================
+
+app.post('/emergency-unpause', async (_req: Request, res: Response) => {
+  try {
+    logger.info('✅ Emergency unpause requested');
+    
+    const nonce = await signer.getNonce('pending');
+    const tx = await contract.emergencyUnpause({ nonce });
+    
+    logger.info('▶️  Emergency unpause transaction sent:', {
+      txHash: tx.hash,
+      nonce
+    });
+    
+    const receipt = await tx.wait();
+    
+    logger.info('✅ EMERGENCY MODE LIFTED', {
+      txHash: receipt?.hash,
+      blockNumber: receipt?.blockNumber
+    });
+    
+    res.json({
+      success: true,
+      txHash: tx.hash,
+      message: 'Emergency mode lifted - system resumed',
+      receipt: {
+        blockNumber: receipt?.blockNumber,
+        gasUsed: receipt?.gasUsed.toString()
+      }
+    });
+    
+  } catch (error: any) {
+    logger.error('❌ Failed to emergency unpause:', {
+      error: error.message,
+      code: error.code
+    });
+    res.status(500).json({
+      success: false,
+      error: 'Emergency unpause failed',
+      message: error.message
+    });
+  }
+});
+
+// ============================================
+// POST /archive-raffles
+// Archive completed/cancelled raffles (cleanup)
+// Body: { raffleIds: number[] }
+// ============================================
+
+app.post('/archive-raffles', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { raffleIds } = req.body;
+    
+    if (!raffleIds || !Array.isArray(raffleIds) || raffleIds.length === 0) {
+      res.status(400).json({
+        success: false,
+        error: 'Invalid request',
+        message: 'raffleIds must be a non-empty array'
+      });
+      return;
+    }
+    
+    logger.info('🗄️  Archive raffles requested:', { count: raffleIds.length, raffleIds });
+    
+    const nonce = await signer.getNonce('pending');
+    const tx = await contract.archiveRaffles(raffleIds, { nonce });
+    
+    logger.info('📦 Archive transaction sent:', {
+      txHash: tx.hash,
+      raffleCount: raffleIds.length,
+      nonce
+    });
+    
+    const receipt = await tx.wait();
+    
+    logger.info('✅ Raffles archived successfully', {
+      txHash: receipt?.hash,
+      blockNumber: receipt?.blockNumber,
+      gasUsed: receipt?.gasUsed.toString(),
+      archivedCount: raffleIds.length
+    });
+    
+    res.json({
+      success: true,
+      txHash: tx.hash,
+      message: `${raffleIds.length} raffle(s) archived successfully`,
+      archivedRaffles: raffleIds,
+      receipt: {
+        blockNumber: receipt?.blockNumber,
+        gasUsed: receipt?.gasUsed.toString()
+      }
+    });
+    
+  } catch (error: any) {
+    logger.error('❌ Failed to archive raffles:', {
+      error: error.message,
+      code: error.code
+    });
+    res.status(500).json({
+      success: false,
+      error: 'Archive failed',
       message: error.message
     });
   }
