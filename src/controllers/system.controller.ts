@@ -5,26 +5,26 @@ import logger from '../utils/logger.js';
 
 /**
  * POST /pause-system
- * Emergency pause - stops all raffle operations
+ * Gracefully pause contract without emitting emergency event
  */
 export async function pauseSystem(_req: Request, res: Response): Promise<void> {
   try {
-    logger.warn('🚨 EMERGENCY PAUSE requested');
+    logger.info('⏸️  Standard pause requested');
     
     // Get fresh nonce from pending pool
     const signer = contract.runner as ethers.Wallet;
     const nonce = await signer.getNonce('pending');
     
-    const tx = await contract.emergencyPause({ nonce });
+    const tx = await contract.pause({ nonce });
     
-    logger.warn('⏸️  Pause transaction sent:', {
+    logger.info('⏸️  Pause transaction sent:', {
       txHash: tx.hash,
       nonce
     });
     
     const receipt = await tx.wait();
     
-    logger.warn('🛑 SYSTEM PAUSED', {
+    logger.info('🛑 System paused', {
       txHash: receipt?.hash,
       blockNumber: receipt?.blockNumber
     });
@@ -50,17 +50,17 @@ export async function pauseSystem(_req: Request, res: Response): Promise<void> {
 
 /**
  * POST /unpause-system
- * Resume normal operations after pause
+ * Resume normal operations after standard pause
  */
 export async function unpauseSystem(_req: Request, res: Response): Promise<void> {
   try {
-    logger.info('▶️  UNPAUSE requested');
+    logger.info('▶️  Standard unpause requested');
     
     // Get fresh nonce from pending pool
     const signer = contract.runner as ethers.Wallet;
     const nonce = await signer.getNonce('pending');
     
-    const tx = await contract.emergencyUnpause({ nonce });
+    const tx = await contract.unpause({ nonce });
     
     logger.info('▶️  Unpause transaction sent:', {
       txHash: tx.hash,

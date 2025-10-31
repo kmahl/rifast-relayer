@@ -18,7 +18,9 @@ import {
   healthRoutes,
   raffleRoutes,
   systemRoutes,
-  adminRoutes
+  adminRoutes,
+  complianceRoutes,
+  monitoringRoutes
 } from './routes/index.js';
 import {
   SERVER_CONFIG,
@@ -92,6 +94,8 @@ app.use(healthRoutes);
 app.use(raffleRoutes);
 app.use(systemRoutes);
 app.use(adminRoutes);
+app.use(complianceRoutes);
+app.use(monitoringRoutes);
 
 // ============================================
 // ERROR HANDLER
