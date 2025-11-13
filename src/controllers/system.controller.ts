@@ -1,42 +1,32 @@
 import { Request, Response } from 'express';
-import { ethers } from 'ethers';
-import { contract } from '../index.js';
+import { enqueueTransaction } from '../queues/tx.queue.js';
 import logger from '../utils/logger.js';
 
 /**
  * POST /pause-system
- * Gracefully pause contract without emitting emergency event
+ * Enqueue standard pause (graceful, no emergency event)
  */
 export async function pauseSystem(_req: Request, res: Response): Promise<void> {
   try {
-    logger.info('⏸️  Standard pause requested');
+    logger.info('⏸️  Enqueueing standard pause');
     
-    // Get fresh nonce from pending pool
-    const signer = contract.runner as ethers.Wallet;
-    const nonce = await signer.getNonce('pending');
-    
-    const tx = await contract.pause({ nonce });
-    
-    logger.info('⏸️  Pause transaction sent:', {
-      txHash: tx.hash,
-      nonce
+    // Enqueue job (worker will process and send TX)
+    const job = await enqueueTransaction('pause-contract', {
+      type: 'pause-contract'
     });
     
-    const receipt = await tx.wait();
-    
-    logger.info('🛑 System paused', {
-      txHash: receipt?.hash,
-      blockNumber: receipt?.blockNumber
+    logger.info('✅ Pause enqueued', {
+      jobId: job.id
     });
     
     res.json({
       success: true,
-      txHash: tx.hash,
-      message: 'System paused successfully'
+      jobId: job.id,
+      message: 'Transaction queued - worker will process'
     });
     
   } catch (error: any) {
-    logger.error('❌ Failed to pause system:', {
+    logger.error('❌ Failed to enqueue pause:', {
       error: error.message,
       code: error.code
     });
@@ -50,38 +40,29 @@ export async function pauseSystem(_req: Request, res: Response): Promise<void> {
 
 /**
  * POST /unpause-system
- * Resume normal operations after standard pause
+ * Enqueue standard unpause (resume normal operations)
  */
 export async function unpauseSystem(_req: Request, res: Response): Promise<void> {
   try {
-    logger.info('▶️  Standard unpause requested');
+    logger.info('▶️  Enqueueing standard unpause');
     
-    // Get fresh nonce from pending pool
-    const signer = contract.runner as ethers.Wallet;
-    const nonce = await signer.getNonce('pending');
-    
-    const tx = await contract.unpause({ nonce });
-    
-    logger.info('▶️  Unpause transaction sent:', {
-      txHash: tx.hash,
-      nonce
+    // Enqueue job (worker will process and send TX)
+    const job = await enqueueTransaction('unpause-contract', {
+      type: 'unpause-contract'
     });
     
-    const receipt = await tx.wait();
-    
-    logger.info('✅ SYSTEM RESUMED', {
-      txHash: receipt?.hash,
-      blockNumber: receipt?.blockNumber
+    logger.info('✅ Unpause enqueued', {
+      jobId: job.id
     });
     
     res.json({
       success: true,
-      txHash: tx.hash,
-      message: 'System unpaused successfully'
+      jobId: job.id,
+      message: 'Transaction queued - worker will process'
     });
     
   } catch (error: any) {
-    logger.error('❌ Failed to unpause system:', {
+    logger.error('❌ Failed to enqueue unpause:', {
       error: error.message,
       code: error.code
     });
@@ -102,7 +83,7 @@ export async function emergencyPause(_req: Request, res: Response): Promise<void
     logger.warn('🚨 EMERGENCY PAUSE requested');
     
     const signer = contract.runner as ethers.Wallet;
-    const nonce = await signer.getNonce('pending');
+    const nonce = await signer.getNonce('latest');
     const tx = await contract.emergencyPause({ nonce });
     
     logger.warn('⏸️  Emergency pause transaction sent:', {
@@ -149,7 +130,7 @@ export async function emergencyUnpause(_req: Request, res: Response): Promise<vo
     logger.info('✅ Emergency unpause requested');
     
     const signer = contract.runner as ethers.Wallet;
-    const nonce = await signer.getNonce('pending');
+    const nonce = await signer.getNonce('latest');
     const tx = await contract.emergencyUnpause({ nonce });
     
     logger.info('▶️  Emergency unpause transaction sent:', {

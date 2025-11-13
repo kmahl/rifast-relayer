@@ -9,6 +9,8 @@ import { fileURLToPath } from 'url';
 
 // Note: .env is loaded by loader.ts before this file imports
 import logger from './utils/logger.js';
+import { startTransactionWorker, stopTransactionWorker } from './workers/tx.worker.js';
+import { initializeQueueMonitoring } from './monitoring/queue.monitor.js';
 import {
   authenticateRequest,
   checkIPWhitelist,
@@ -63,6 +65,13 @@ try {
   logger.info(`   RPC: ${NETWORK_CONFIG.rpcUrl}`);
   logger.info(`   Contract: ${CONTRACT_ADDRESS}`);
   logger.info(`   Signer: ${signer.address}`);
+  
+  // Initialize transaction worker and queue monitoring
+  logger.info('🔧 Initializing transaction worker...');
+  initializeQueueMonitoring();
+  startTransactionWorker();
+  logger.info('✅ Transaction worker started');
+  
 } catch (error: any) {
   logger.error('❌ Failed to initialize blockchain connection:', { error: error.message });
   process.exit(1);
@@ -130,6 +139,10 @@ const server = app.listen(SERVER_CONFIG.port, SERVER_CONFIG.host, () => {
 process.on('SIGTERM', async () => {
   logger.warn('⚠️  SIGTERM received, shutting down gracefully...');
   
+  // Stop transaction worker first (wait for active jobs to complete)
+  logger.info('Stopping transaction worker...');
+  await stopTransactionWorker();
+  
   server.close(() => {
     logger.info('Server closed');
     process.exit(0);
@@ -138,6 +151,10 @@ process.on('SIGTERM', async () => {
 
 process.on('SIGINT', async () => {
   logger.warn('⚠️  SIGINT received, shutting down gracefully...');
+  
+  // Stop transaction worker first (wait for active jobs to complete)
+  logger.info('Stopping transaction worker...');
+  await stopTransactionWorker();
   
   server.close(() => {
     logger.info('Server closed');

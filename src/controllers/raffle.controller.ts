@@ -1,6 +1,5 @@
 import { Request, Response } from 'express';
-import { ethers } from 'ethers';
-import { contract } from '../index.js';
+import { enqueueTransaction } from '../queues/tx.queue.js';
 import logger from '../utils/logger.js';
 
 /**
@@ -29,7 +28,7 @@ export interface ExecuteRefundRequest {
 
 /**
  * POST /create-raffle
- * Create a new raffle on-chain
+ * Enqueue raffle creation (processed by worker)
  */
 export async function createRaffle(req: Request, res: Response): Promise<void> {
   try {
@@ -45,7 +44,7 @@ export async function createRaffle(req: Request, res: Response): Promise<void> {
       return;
     }
     
-    logger.info('📝 Creating raffle on-chain...', {
+    logger.info('📝 Enqueueing raffle creation...', {
       referenceId: referenceId.toString(),
       templateId: templateId.toString(),
       ticketPrice,
@@ -54,33 +53,27 @@ export async function createRaffle(req: Request, res: Response): Promise<void> {
       durationSeconds
     });
     
-    // Get fresh nonce from pending pool
-    const signer = contract.runner as ethers.Wallet;
-    const nonce = await signer.getNonce('pending');
+    // Enqueue job (worker will process and send TX)
+    const job = await enqueueTransaction('create-raffle', {
+      type: 'create-raffle',
+      referenceId,
+      templateId,
+      ticketPrice,
+      maxTickets,
+      minTickets,
+      durationSeconds
+    });
     
-    // Send transaction (fire and forget - blockchain events will update DB)
-    const tx = await contract.createRaffle(
-      BigInt(templateId),
-      BigInt(referenceId),
-      ethers.parseUnits(ticketPrice, 18),
-      BigInt(maxTickets),
-      BigInt(minTickets),
-      BigInt(durationSeconds),
-      { nonce }
-    );
-    
-    logger.info('✅ Raffle creation tx sent (not waiting for confirmation):', {
-      txHash: tx.hash,
-      nonce,
+    logger.info('✅ Raffle creation enqueued', {
+      jobId: job.id,
       referenceId: referenceId.toString()
     });
     
     res.json({
       success: true,
-      txHash: tx.hash,
-      nonce,
+      jobId: job.id,
       referenceId: referenceId.toString(),
-      message: 'Transaction sent - blockchain events will update database'
+      message: 'Transaction queued - worker will process'
     });
     
   } catch (error: any) {
@@ -99,7 +92,7 @@ export async function createRaffle(req: Request, res: Response): Promise<void> {
 
 /**
  * POST /execute-raffle
- * Execute an expired raffle that meets minimum tickets
+ * Enqueue raffle execution (VRF request)
  */
 export async function executeRaffle(req: Request, res: Response): Promise<void> {
   try {
@@ -113,39 +106,30 @@ export async function executeRaffle(req: Request, res: Response): Promise<void> 
       return;
     }
     
-    logger.info('🎲 Execute raffle requested', {
+    logger.info('🎲 Enqueueing raffle execution...', {
       raffleId: raffleId.toString()
     });
     
-    // Get fresh nonce from pending pool
-    const signer = contract.runner as ethers.Wallet;
-    const nonce = await signer.getNonce('pending');
-    
-    // Estimate gas
-    const gasEstimate = await contract.executeRaffle.estimateGas(BigInt(raffleId));
-    const gasLimit = gasEstimate * 120n / 100n;
-    
-    // Send transaction (fire and forget - blockchain events will update DB)
-    const tx = await contract.executeRaffle(BigInt(raffleId), {
-      gasLimit,
-      nonce
+    // Enqueue job (worker will process and send TX)
+    const job = await enqueueTransaction('execute-raffle', {
+      type: 'execute-raffle',
+      raffleId
     });
     
-    logger.info('✅ Execute raffle tx sent (not waiting for confirmation):', {
-      raffleId: raffleId.toString(),
-      txHash: tx.hash,
-      nonce
+    logger.info('✅ Raffle execution enqueued', {
+      jobId: job.id,
+      raffleId: raffleId.toString()
     });
     
     res.json({
       success: true,
-      txHash: tx.hash,
+      jobId: job.id,
       raffleId: raffleId.toString(),
-      message: 'Transaction sent - blockchain events will update database'
+      message: 'Transaction queued - worker will process'
     });
     
   } catch (error: any) {
-    logger.error('❌ Failed to execute raffle:', {
+    logger.error('❌ Failed to enqueue raffle execution:', {
       error: error.message,
       code: error.code
     });
@@ -159,7 +143,7 @@ export async function executeRaffle(req: Request, res: Response): Promise<void> 
 
 /**
  * POST /cancel-raffle
- * Cancel an empty raffle (0 tickets)
+ * Enqueue raffle cancellation (0 tickets only)
  */
 export async function cancelRaffle(req: Request, res: Response): Promise<void> {
   try {
@@ -173,39 +157,30 @@ export async function cancelRaffle(req: Request, res: Response): Promise<void> {
       return;
     }
     
-    logger.info('🚫 Cancel raffle requested', {
+    logger.info('🚫 Enqueueing raffle cancellation...', {
       raffleId: raffleId.toString()
     });
     
-    // Get fresh nonce from pending pool
-    const signer = contract.runner as ethers.Wallet;
-    const nonce = await signer.getNonce('pending');
-    
-    // Estimate gas
-    const gasEstimate = await contract.cancelRaffle.estimateGas(BigInt(raffleId));
-    const gasLimit = gasEstimate * 120n / 100n;
-    
-    // Send transaction (fire and forget - blockchain events will update DB)
-    const tx = await contract.cancelRaffle(BigInt(raffleId), {
-      gasLimit,
-      nonce
+    // Enqueue job (worker will process and send TX)
+    const job = await enqueueTransaction('cancel-raffle', {
+      type: 'cancel-raffle',
+      raffleId
     });
     
-    logger.info('✅ Cancel raffle tx sent (not waiting for confirmation):', {
-      raffleId: raffleId.toString(),
-      txHash: tx.hash,
-      nonce
+    logger.info('✅ Raffle cancellation enqueued', {
+      jobId: job.id,
+      raffleId: raffleId.toString()
     });
     
     res.json({
       success: true,
-      txHash: tx.hash,
+      jobId: job.id,
       raffleId: raffleId.toString(),
-      message: 'Transaction sent - blockchain events will update database'
+      message: 'Transaction queued - worker will process'
     });
     
   } catch (error: any) {
-    logger.error('❌ Failed to cancel raffle:', {
+    logger.error('❌ Failed to enqueue raffle cancellation:', {
       error: error.message,
       code: error.code
     });
@@ -219,7 +194,7 @@ export async function cancelRaffle(req: Request, res: Response): Promise<void> {
 
 /**
  * POST /execute-refund
- * Execute refund batch for expired raffles
+ * Enqueue refund batch execution for expired raffles
  */
 export async function executeRefund(req: Request, res: Response): Promise<void> {
   try {
@@ -234,38 +209,30 @@ export async function executeRefund(req: Request, res: Response): Promise<void> 
       return;
     }
     
-    logger.info('💸 Executing refund batch...', {
+    logger.info('💸 Enqueueing refund batch execution...', {
       raffleId: raffleId.toString()
     });
     
-    // Estimate gas first
-    const gasEstimate = await contract.executeRefundBatch.estimateGas(BigInt(raffleId));
-    const gasLimit = gasEstimate * 120n / 100n; // +20% buffer
-    
-    logger.debug('⛽ Gas estimate:', {
-      estimate: gasEstimate.toString(),
-      limit: gasLimit.toString()
+    // Enqueue job (worker will process and send TX)
+    const job = await enqueueTransaction('execute-refund', {
+      type: 'execute-refund',
+      raffleId
     });
     
-    // Send transaction (fire and forget)
-    const tx = await contract.executeRefundBatch(BigInt(raffleId), {
-      gasLimit
-    });
-    
-    logger.info('✅ Refund batch tx sent (not waiting for confirmation):', {
-      txHash: tx.hash,
+    logger.info('✅ Refund batch execution enqueued', {
+      jobId: job.id,
       raffleId: raffleId.toString()
     });
     
     res.json({
       success: true,
-      txHash: tx.hash,
+      jobId: job.id,
       raffleId: raffleId.toString(),
-      message: 'Transaction sent - blockchain events will update database'
+      message: 'Transaction queued - worker will process'
     });
     
   } catch (error: any) {
-    logger.error('❌ Failed to execute refund:', {
+    logger.error('❌ Failed to enqueue refund execution:', {
       error: error.message,
       code: error.code,
       reason: error.reason

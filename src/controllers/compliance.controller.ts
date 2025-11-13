@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { ethers } from 'ethers';
 import { contract } from '../index.js';
+import { enqueueTransaction } from '../queues/tx.queue.js';
 import logger from '../utils/logger.js';
 
 interface BlocklistEntry {
@@ -10,7 +11,7 @@ interface BlocklistEntry {
 
 /**
  * POST /blocklist/add
- * Block a single address with a public reason
+ * Enqueue single address blocking
  */
 export async function addToBlocklist(req: Request, res: Response): Promise<void> {
   try {
@@ -37,35 +38,31 @@ export async function addToBlocklist(req: Request, res: Response): Promise<void>
     const normalizedAddress = ethers.getAddress(address);
     const sanitizedReason = reason.trim();
 
-    logger.warn('🚫 Blocking address', {
+    logger.warn('🚫 Enqueueing address blocking', {
       address: normalizedAddress,
       reason: sanitizedReason
     });
 
-    const signer = contract.runner as ethers.Wallet;
-    const nonce = await signer.getNonce('pending');
-    const tx = await contract.addToBlocklist(normalizedAddress, sanitizedReason, { nonce });
-
-    const receipt = await tx.wait();
-
-    logger.warn('✅ Address blocked', {
+    // Enqueue job (worker will process and send TX)
+    const job = await enqueueTransaction('add-to-blocklist', {
+      type: 'add-to-blocklist',
       address: normalizedAddress,
-      txHash: receipt?.hash,
-      blockNumber: receipt?.blockNumber
+      reason: sanitizedReason
+    });
+
+    logger.warn('✅ Address blocking enqueued', {
+      jobId: job.id,
+      address: normalizedAddress
     });
 
     res.json({
       success: true,
-      txHash: tx.hash,
+      jobId: job.id,
       address: normalizedAddress,
-      message: 'Address added to blocklist',
-      receipt: {
-        blockNumber: receipt?.blockNumber,
-        gasUsed: receipt?.gasUsed?.toString()
-      }
+      message: 'Transaction queued - worker will process'
     });
   } catch (error: any) {
-    logger.error('❌ Failed to block address', {
+    logger.error('❌ Failed to enqueue address blocking', {
       error: error.message,
       code: error.code
     });
@@ -79,7 +76,7 @@ export async function addToBlocklist(req: Request, res: Response): Promise<void>
 
 /**
  * POST /blocklist/add-batch
- * Block up to 100 addresses in a single transaction
+ * Enqueue batch blocking of up to 100 addresses
  */
 export async function addToBlocklistBatch(req: Request, res: Response): Promise<void> {
   try {
@@ -129,34 +126,30 @@ export async function addToBlocklistBatch(req: Request, res: Response): Promise<
       reasons.push(entry.reason.trim());
     }
 
-    logger.warn('🚫 Blocking batch of addresses', {
+    logger.warn('🚫 Enqueueing batch address blocking', {
       count: normalizedAddresses.length
     });
 
-    const signer = contract.runner as ethers.Wallet;
-    const nonce = await signer.getNonce('pending');
-    const tx = await contract.addToBlocklistBatch(normalizedAddresses, reasons, { nonce });
+    // Enqueue job (worker will process and send TX)
+    const job = await enqueueTransaction('add-to-blocklist-batch', {
+      type: 'add-to-blocklist-batch',
+      addresses: normalizedAddresses,
+      reasons
+    });
 
-    const receipt = await tx.wait();
-
-    logger.warn('✅ Blocklist batch processed', {
-      count: normalizedAddresses.length,
-      txHash: receipt?.hash,
-      blockNumber: receipt?.blockNumber
+    logger.warn('✅ Batch blocking enqueued', {
+      jobId: job.id,
+      count: normalizedAddresses.length
     });
 
     res.json({
       success: true,
-      txHash: tx.hash,
+      jobId: job.id,
       blockedCount: normalizedAddresses.length,
-      message: 'Addresses added to blocklist',
-      receipt: {
-        blockNumber: receipt?.blockNumber,
-        gasUsed: receipt?.gasUsed?.toString()
-      }
+      message: 'Transaction queued - worker will process'
     });
   } catch (error: any) {
-    logger.error('❌ Failed to process blocklist batch', {
+    logger.error('❌ Failed to enqueue batch blocking', {
       error: error.message,
       code: error.code
     });
@@ -170,7 +163,7 @@ export async function addToBlocklistBatch(req: Request, res: Response): Promise<
 
 /**
  * POST /blocklist/remove
- * Remove an address from the blocklist
+ * Enqueue address removal from blocklist
  */
 export async function removeFromBlocklist(req: Request, res: Response): Promise<void> {
   try {
@@ -187,34 +180,29 @@ export async function removeFromBlocklist(req: Request, res: Response): Promise<
 
     const normalizedAddress = ethers.getAddress(address);
 
-    logger.info('✅ Removing address from blocklist', {
+    logger.info('✅ Enqueueing address unblocking', {
       address: normalizedAddress
     });
 
-    const signer = contract.runner as ethers.Wallet;
-    const nonce = await signer.getNonce('pending');
-    const tx = await contract.removeFromBlocklist(normalizedAddress, { nonce });
+    // Enqueue job (worker will process and send TX)
+    const job = await enqueueTransaction('remove-from-blocklist', {
+      type: 'remove-from-blocklist',
+      address: normalizedAddress
+    });
 
-    const receipt = await tx.wait();
-
-    logger.info('✅ Address unblocked', {
-      address: normalizedAddress,
-      txHash: receipt?.hash,
-      blockNumber: receipt?.blockNumber
+    logger.info('✅ Address unblocking enqueued', {
+      jobId: job.id,
+      address: normalizedAddress
     });
 
     res.json({
       success: true,
-      txHash: tx.hash,
+      jobId: job.id,
       address: normalizedAddress,
-      message: 'Address removed from blocklist',
-      receipt: {
-        blockNumber: receipt?.blockNumber,
-        gasUsed: receipt?.gasUsed?.toString()
-      }
+      message: 'Transaction queued - worker will process'
     });
   } catch (error: any) {
-    logger.error('❌ Failed to remove blocklist entry', {
+    logger.error('❌ Failed to enqueue address unblocking', {
       error: error.message,
       code: error.code
     });

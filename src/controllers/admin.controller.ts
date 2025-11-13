@@ -1,48 +1,32 @@
 import { Request, Response } from 'express';
-import { ethers } from 'ethers';
-import { contract } from '../index.js';
+import { enqueueTransaction } from '../queues/tx.queue.js';
 import logger from '../utils/logger.js';
 
 /**
  * POST /withdraw-fees
- * Withdraw accumulated platform fees
+ * Enqueue platform fee withdrawal
  */
 export async function withdrawFees(_req: Request, res: Response): Promise<void> {
   try {
-    logger.info('💰 Platform fee withdrawal requested');
+    logger.info('💰 Enqueueing platform fee withdrawal');
     
-    // Get fresh nonce from pending pool
-    const signer = contract.runner as ethers.Wallet;
-    const nonce = await signer.getNonce('pending');
-    
-    // withdrawPlatformFees() doesn't take parameters - sends all to owner
-    const tx = await contract.withdrawPlatformFees({ nonce });
-    
-    logger.info('💸 Withdrawal transaction sent:', {
-      txHash: tx.hash,
-      nonce
+    // Enqueue job (worker will process and send TX)
+    const job = await enqueueTransaction('withdraw-fees', {
+      type: 'withdraw-fees'
     });
     
-    const receipt = await tx.wait();
-    
-    logger.info('✅ Fees withdrawn successfully', {
-      txHash: receipt?.hash,
-      blockNumber: receipt?.blockNumber,
-      gasUsed: receipt?.gasUsed.toString()
+    logger.info('✅ Fee withdrawal enqueued', {
+      jobId: job.id
     });
     
     res.json({
       success: true,
-      txHash: tx.hash,
-      message: 'Platform fees withdrawn to owner',
-      receipt: {
-        blockNumber: receipt?.blockNumber,
-        gasUsed: receipt?.gasUsed.toString()
-      }
+      jobId: job.id,
+      message: 'Transaction queued - worker will process'
     });
     
   } catch (error: any) {
-    logger.error('❌ Failed to withdraw fees:', {
+    logger.error('❌ Failed to enqueue fee withdrawal:', {
       error: error.message,
       code: error.code
     });
@@ -56,7 +40,7 @@ export async function withdrawFees(_req: Request, res: Response): Promise<void> 
 
 /**
  * POST /archive-raffles
- * Archive completed/cancelled raffles (cleanup)
+ * Enqueue raffle archiving (cleanup completed/cancelled raffles)
  * Body: { raffleIds: number[] }
  */
 export async function archiveRaffles(req: Request, res: Response): Promise<void> {
@@ -72,40 +56,28 @@ export async function archiveRaffles(req: Request, res: Response): Promise<void>
       return;
     }
     
-    logger.info('🗄️  Archive raffles requested:', { count: raffleIds.length, raffleIds });
+    logger.info('🗄️  Enqueueing raffle archiving:', { count: raffleIds.length, raffleIds });
     
-    const signer = contract.runner as ethers.Wallet;
-    const nonce = await signer.getNonce('pending');
-    const tx = await contract.archiveRaffles(raffleIds, { nonce });
-    
-    logger.info('📦 Archive transaction sent:', {
-      txHash: tx.hash,
-      raffleCount: raffleIds.length,
-      nonce
+    // Enqueue job (worker will process and send TX)
+    const job = await enqueueTransaction('archive-raffles', {
+      type: 'archive-raffles',
+      raffleIds
     });
     
-    const receipt = await tx.wait();
-    
-    logger.info('✅ Raffles archived successfully', {
-      txHash: receipt?.hash,
-      blockNumber: receipt?.blockNumber,
-      gasUsed: receipt?.gasUsed.toString(),
-      archivedCount: raffleIds.length
+    logger.info('✅ Raffle archiving enqueued', {
+      jobId: job.id,
+      count: raffleIds.length
     });
     
     res.json({
       success: true,
-      txHash: tx.hash,
-      message: `${raffleIds.length} raffle(s) archived successfully`,
-      archivedRaffles: raffleIds,
-      receipt: {
-        blockNumber: receipt?.blockNumber,
-        gasUsed: receipt?.gasUsed.toString()
-      }
+      jobId: job.id,
+      message: 'Transaction queued - worker will process',
+      raffleCount: raffleIds.length
     });
     
   } catch (error: any) {
-    logger.error('❌ Failed to archive raffles:', {
+    logger.error('❌ Failed to enqueue raffle archiving:', {
       error: error.message,
       code: error.code
     });
