@@ -18,12 +18,14 @@
 
 import Bull, { Queue, JobOptions } from 'bull';
 import logger from '../utils/logger.js';
+import { env } from '../config/env.js';
 
-// Redis configuration - Shared with backend but different queue names
-// Backend uses: 'blockchain-blocks'
-// Relayer uses: 'relayer-tx-main', 'relayer-tx-retry'
+// Redis configuration - Validated at startup (no fallback)
+// Shared with backend but different queue names:
+// - Backend uses: 'blockchain-blocks'
+// - Relayer uses: 'relayer-tx-main', 'relayer-tx-retry'
 // Bull separates by queue name (no collision)
-const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
+const REDIS_URL = env.redisUrl;
 
 /**
  * Main transaction queue - FIFO strict processing
@@ -190,8 +192,8 @@ export async function moveToRetryQueue(
 
 // Log queue initialization
 logger.info('[TxQueue] Queues initialized', {
-  environment: process.env.NODE_ENV || 'development',
-  redisUrl: REDIS_URL,
+  environment: env.nodeEnv,
+  redisUrl: env.redisUrl,
   mainQueue: 'relayer-tx-main',
   retryQueue: 'relayer-tx-retry'
 });
